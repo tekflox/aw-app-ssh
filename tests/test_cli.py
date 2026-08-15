@@ -136,7 +136,7 @@ def test_rsync_with_no_remote_side_is_refused_before_any_lookup(vault, capsys):
 def test_the_tools_exit_code_is_returned(vault, monkeypatch):
     # require() is stubbed because this container genuinely has no rsync; what
     # is under test is that a non-zero exit propagates, not binary presence.
-    monkeypatch.setattr(cli.spawn, "require", lambda b: b)
+    monkeypatch.setattr(cli.spawn, "require", lambda b, a=None: b)
     monkeypatch.setattr(cli.spawn, "run", lambda *a, **k: 23)
     assert cli.main("rsync", ["user@host:/x", "./y"]) == 23
 
@@ -183,5 +183,19 @@ def test_a_missing_binary_is_caught_before_anyone_is_asked(vault, monkeypatch, c
     assert vault == [], "asked for a secret it could never have used"
 
 
-def _raise_missing(binary):
+def _raise_missing(binary, announce=None):
     raise spawn.BinaryMissing(f"{binary!r} is not installed in this container.")
+
+
+def test_a_dry_run_does_not_install_anything(vault, monkeypatch, capsys):
+    """It promises to ask nobody and do nothing. Downloading a package is not
+    nothing — and on a slow link it would make the cheap, safe check the
+    expensive one."""
+    monkeypatch.setattr(cli.spawn, "require", _explode_on_require)
+
+    assert cli.main("ssh", ["--aw-dry-run", "root@host"]) == 0
+    assert "binary :" in capsys.readouterr().out
+
+
+def _explode_on_require(binary, announce=None):
+    raise AssertionError("a dry run tried to install a binary")

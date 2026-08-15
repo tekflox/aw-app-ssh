@@ -88,6 +88,23 @@ def _assign(opts: dict, flag: str, value: str) -> None:
         opts["host_keys"] = value
 
 
+def _binary_status(prog: str) -> str:
+    """What a dry run can say about the tool without installing it."""
+    import shutil
+
+    from . import provision
+    found = shutil.which(prog) or provision.provisioned_path(prog)
+    return found or f"not here yet — {provision.PACKAGE_FOR.get(prog, prog)} " \
+                    f"will be fetched on the first real run"
+
+
+def _announce(message: str) -> None:
+    """Progress that is not output. stderr, so it never lands in a pipe the
+    caller is parsing — ``aw-workspace-cli ssh host cat file > out`` has to
+    stay usable."""
+    print(message, file=sys.stderr)
+
+
 def _parse_target(prog: str, args: list[str]) -> Target | None:
     return parse_ssh(args) if prog == "ssh" else parse_rsync(args)
 
@@ -187,13 +204,6 @@ def _cmd_run(prog: str, args: list[str]) -> int:
         print(f"aw-workspace-cli {prog}: {hint}", file=sys.stderr)
         return 1
 
-    # Before anything that can interrupt a human. Found by running it for real:
-    # in a container without rsync, the command fetched the credential — one
-    # approval, one notification, one one-shot grant spent — and only then died
-    # on the missing binary. Everything that can fail without asking must fail
-    # first.
-    spawn.require(prog)
-
     name = creds.resolve_name(target, opts["secret"])
     # The argv named no user but the credential's name knows one: without
     # passing it on, ssh would log in as whatever the local account is and the
@@ -207,9 +217,20 @@ def _cmd_run(prog: str, args: list[str]) -> int:
               f"login  : {target.user or login_user or '(local user)'}\n"
               f"secret : {name}\n"
               f"scope  : {opts['scope']}\n"
+              f"binary : {_binary_status(prog)}\n"
               f"argv   : {prog} {' '.join(argv)}\n"
               f"(dry run — no approval requested, nothing connected)")
         return 0
+
+    # Before anything that can interrupt a human. Found by running it for real:
+    # in a container without rsync, the command fetched the credential — one
+    # approval, one notification, one one-shot grant spent — and only then died
+    # on the missing binary. Everything that can fail without asking must fail
+    # first, and installing the binary is one of those things.
+    #
+    # After the dry-run branch, not before it: a dry run promises to ask nobody
+    # and do nothing, and downloading a package is not nothing.
+    spawn.require(prog, _announce)
 
     reason = f"aw-workspace-cli {prog} {' '.join(rest)}"[:400]
     print(f"# requesting '{name}' for {target.label} — approve on Telegram if asked",
@@ -219,7 +240,8 @@ def _cmd_run(prog: str, args: list[str]) -> int:
 
     return spawn.run(prog, rest, credential,
                      host_key_policy=opts["host_keys"], login_user=login_user,
-                     cwd=os.environ.get("AW_ORIGINAL_CWD") or os.getcwd())
+                     cwd=os.environ.get("AW_ORIGINAL_CWD") or os.getcwd(),
+                     announce=_announce)
 
 
 __all__ = ["main", "USAGE"]

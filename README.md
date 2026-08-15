@@ -62,6 +62,7 @@ account.
 | `ssh_app/target.py` | pulling `user@host` out of a real ssh/rsync argv |
 | `ssh_app/credentials.py` | which secret, and fetching it through aw-app-secrets |
 | `ssh_app/spawn.py` | the injection, and the argv/`-e` surgery around it |
+| `ssh_app/provision.py` | making ssh/rsync exist in *this* container, with or without root |
 | `ssh_app/plugin.py` | activation: installs `openssh-client` + `rsync` (`python:3.12-slim` has neither) |
 | `skills/aw-ssh/` | the agent-facing skill |
 
@@ -70,9 +71,9 @@ account.
 * **aw-app-secrets ≥ 0.6.0** — the vault, the approval gate and the per-secret
   auto-approve flag all live there.
 * Runs in **whatever container invoked it**: ssh is interactive and cannot be
-  proxied over HTTP. The app installs the binaries into the workspace
-  container; an agent-runner container is a different image and may lack
-  `rsync`.
+  proxied over HTTP. The binaries are provisioned per container — installed if
+  there is root, fetched and unpacked without it if there is not (see
+  `ssh_app/provision.py`). Nothing to check before use.
 
 ## Tests
 

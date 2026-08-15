@@ -51,9 +51,10 @@ class SshAppPlugin:
 
         if failed:
             log.warning(
-                "aw-app-ssh: could not install %s — `aw-workspace-cli ssh` will "
-                "report the missing binary by name when it runs, and the "
-                "runtime's system-CLI healer will retry", "; ".join(failed))
+                "aw-app-ssh: could not install %s here — not fatal: the CLI "
+                "provisions what it needs at call time (ssh_app.provision), and "
+                "the runtime's system-CLI healer retries this path too",
+                "; ".join(failed))
 
         missing = [b for b in ("ssh", "ssh-agent", "rsync") if not shutil.which(b)]
         log.info("aw-app-ssh activated (installed=%s, still missing here=%s)",

@@ -48,6 +48,7 @@ import re
 import subprocess
 import tempfile
 
+from . import provision
 from .credentials import Credential
 from .target import ssh_target_index
 
@@ -97,16 +98,18 @@ def ssh_options(host_key_policy: str = "accept-new",
     return opts
 
 
-def require(binary: str) -> str:
-    found = shutil.which(binary)
-    if found:
-        return found
-    raise BinaryMissing(
-        f"{binary!r} is not installed in this container. aw-app-ssh installs it "
-        f"into the workspace container on activation (contributes.system_clis); "
-        f"if you are seeing this from an agent runner container, that is a "
-        f"different image and {binary} has to be present there too."
-    )
+def require(binary: str, announce=None) -> str:
+    """The path to ``binary``, installing it here if this container lacks it.
+
+    Used to raise and tell the caller to go and run the command somewhere else,
+    which was the app handing its own problem to the user. It now provisions —
+    see ``provision.py`` for what that means without root — and only fails when
+    it genuinely cannot.
+    """
+    try:
+        return provision.ensure(binary, announce=announce)
+    except provision.ProvisionError as exc:
+        raise BinaryMissing(f"{binary}: {exc}") from exc
 
 
 def _start_agent(env: dict) -> dict:
@@ -204,9 +207,28 @@ def _shell_quote(s: str) -> str:
     return s if s and all(c.isalnum() or c in "-_=./:" for c in s) else "'" + s.replace("'", "'\\''") + "'"
 
 
+def _env_for_provisioned(env: dict) -> dict:
+    """Put the app's own package prefix in front of PATH and LD_LIBRARY_PATH.
+
+    Needed even when the program itself was found on PATH: ssh shells out to
+    ssh-agent and ssh-add, and rsync shells out to ssh. If one of those was the
+    binary this app had to fetch, the child has to be able to find it too.
+    """
+    root = provision.prefix()
+    bins = [d for d in (os.path.join(root, "usr/bin"), os.path.join(root, "bin"))
+            if os.path.isdir(d)]
+    if bins:
+        env["PATH"] = os.pathsep.join(bins + [env.get("PATH", "")])
+    libs = provision.library_path()
+    if libs:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            [libs] + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []))
+    return env
+
+
 def run(program: str, args: list[str], credential: Credential, *,
         host_key_policy: str = "accept-new", login_user: str | None = None,
-        cwd: str | None = None) -> int:
+        cwd: str | None = None, announce=None) -> int:
     """Spawn ``program`` with ``credential`` attached. Returns its exit code.
 
     stdin/stdout/stderr are inherited untouched — an interactive ssh session
@@ -219,15 +241,15 @@ def run(program: str, args: list[str], credential: Credential, *,
     no file descriptor behind it — under pytest's capture, or anything else that
     replaces the stream — and passing it then raises before ssh ever starts.
     """
-    require(program)
-    argv = [program] + build_argv(program, args, host_key_policy=host_key_policy,
-                                  login_user=login_user)
-    env = dict(os.environ)
+    program_path = require(program, announce)
+    argv = [program_path] + build_argv(program, args, host_key_policy=host_key_policy,
+                                       login_user=login_user)
+    env = _env_for_provisioned(dict(os.environ))
     cwd = cwd or os.getcwd()
 
     if credential.is_private_key:
-        require("ssh-agent")
-        require("ssh-add")
+        require("ssh-agent", announce)
+        require("ssh-add", announce)
         agent_env = _start_agent(env)
         try:
             _add_key(agent_env, credential.value)

@@ -126,18 +126,28 @@ Do not "fix" it with `--aw-host-keys no`; find out why the key changed.
 | `N secrets match host … did not say which user` | ambiguous | write `user@host`, or `--aw-secret <name>` |
 | `refused` / `denied by the human` | they said no | **stop.** Report it; do not retry |
 | `nobody answered the approval within Ns` | no tap within the window | the request is still live — ask the user in chat before running it again |
-| `'rsync' is not installed in this container` | you are somewhere the app did not install it | see below |
+| `rsync is not installed here — fetching rsync` | not an error; first run in this container | wait ~15s, it continues on its own |
 | `no secret store reachable` | this workspace never completed the `/link` handshake | not a missing key — say the workspace is unlinked |
 
-## Where this runs
+## Where this runs, and the binaries
 
 The command executes in **whatever container invoked it**, because ssh is
-interactive and cannot be proxied over HTTP. The app installs `openssh-client`
-and `rsync` into the *workspace* container on activation. An agent-runner
-container is a different image: `ssh` is normally there, `rsync` may not be. If
-you hit that, run the transfer from a workspace terminal, or use
-`aw-workspace-cli remote-hosts push/pull` (aw-app-remote-host-cli) for the
-BYOD host specifically.
+interactive and cannot be proxied over HTTP. Those containers are not the same
+image, and one of them (the agent runner) has no root.
+
+**You do not have to care.** The app makes the binary exist wherever it runs:
+already installed → use it; root or passwordless sudo → `apt-get install`;
+neither → fetch the package without root and unpack it under the workspace
+home. First run in a fresh container takes about fifteen seconds and says so;
+after that it is instant, and because the unpacked copy sits on the shared
+filesystem, the next container gets it for free.
+
+So there is nothing to check before running a transfer, and no "go and do it
+somewhere else" step. If it genuinely cannot — no apt, no root, no network —
+it says which of those was missing.
+
+`--aw-dry-run` deliberately does **not** install anything; it just reports
+whether the binary is here yet.
 
 ## What "never sees the credential" does and does not mean
 
