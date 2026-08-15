@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "ssh",
   "name": "SSH",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Contributes `aw-workspace-cli ssh` and `aw-workspace-cli rsync`: the real tools, with the private key or password fetched from the workspace vault (aw-app-secrets) and injected into an ephemeral ssh-agent, so the caller \u2014 usually an agent \u2014 connects without ever seeing the credential. Arguments are ssh's/rsync's own; this app only adds `--aw-*` flags.",
   "publisher": "TekFlox",
   "category": "Apps",
