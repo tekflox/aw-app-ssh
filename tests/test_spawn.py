@@ -8,6 +8,7 @@ implementation — fails here instead of in someone's shell history.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 
@@ -32,16 +33,18 @@ def fake_tools(tmp_path, monkeypatch):
     (tmp_path / "rsync").write_text(
         "#!/bin/sh\n" f'echo "ARGV: $*" >> "{log}"\n'
     )
-    # ssh-agent normally execs its argument; the fake also records the key it
-    # was handed, which is how the "arrived intact" assertion is possible.
+    # ssh-agent -s prints the env that reaches the daemon; -k stops it.
     (tmp_path / "ssh-agent").write_text(
         "#!/bin/sh\n"
-        'shift 2\n'          # drop "sh" "-c"
-        'script="$1"; shift\n'
-        'shift\n'            # drop the "--" separator
-        f'echo "AGENT_SCRIPT_RAN" >> "{log}"\n'
-        f'SSH_ADD_LOG="{tmp_path}/ssh-add.log" sh -c "$script" -- "$@"\n'
+        'case "$1" in\n'
+        f'  -k) echo "AGENT_KILLED" >> "{log}"; exit 0 ;;\n'
+        f'  -s) echo "AGENT_STARTED" >> "{log}"\n'
+        f'      echo "SSH_AUTH_SOCK={tmp_path}/agent.sock; export SSH_AUTH_SOCK;"\n'
+        '      echo "SSH_AGENT_PID=4242; export SSH_AGENT_PID;"; exit 0 ;;\n'
+        'esac\n'
     )
+    # ssh-add takes the key on stdin — recording it is how the "arrived
+    # intact" assertion is possible.
     (tmp_path / "ssh-add").write_text(
         "#!/bin/sh\n" f'cat >> "{tmp_path}/ssh-add.log"\n'
     )
@@ -103,8 +106,9 @@ def test_the_key_actually_arrives_in_the_agent(fake_tools):
     tmp, log = fake_tools
     spawn.run("ssh", ["root@host"], Credential("k", KEY))
 
-    assert "AGENT_SCRIPT_RAN" in _read(log)
+    assert "AGENT_STARTED" in _read(log)
     assert "secretmaterial" in _read(tmp / "ssh-add.log")
+    assert "AGENT_KILLED" in _read(log), "the agent outlived the command"
 
 
 def test_a_password_is_not_an_argument_and_its_file_is_cleaned_up(fake_tools):
@@ -199,9 +203,36 @@ def test_the_exit_code_is_the_tools(fake_tools):
     assert spawn.run("rsync", ["user@host:/x", "./y"], Credential("k", PASSWORD)) == 23
 
 
-def test_real_ssh_agent_accepts_the_generated_script():
-    """The fakes above prove the wiring; this proves the script is valid shell
-    for the real thing, which is the half a fake cannot check."""
-    script = spawn._agent_script("ssh")
-    assert subprocess.run(["sh", "-n", "-c", script], capture_output=True).returncode == 0
-    assert "exec ssh" in script
+@pytest.mark.skipif(not shutil.which("ssh-agent") or not shutil.which("ssh-keygen"),
+                    reason="needs a real OpenSSH client")
+def test_a_real_agent_really_accepts_a_real_key(tmp_path):
+    """The half a fake cannot check — and the half that broke.
+
+    The previous implementation handed the key to ssh-agent on an inherited
+    file descriptor. Every fake passed; the real thing worked in one container
+    and died with "Bad file descriptor" in another, because fd survival across
+    ssh-agent's exec is not something ssh-agent promises. This test talks to
+    the real binaries, so that class of failure cannot reach a release again.
+    """
+    keyfile = tmp_path / "id_ed25519"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(keyfile)],
+                   check=True)
+
+    env = spawn._start_agent(dict(os.environ))
+    try:
+        spawn._add_key(env, keyfile.read_text())
+        listed = subprocess.run(["ssh-add", "-l"], env=env, capture_output=True, text=True)
+        assert listed.returncode == 0 and "ED25519" in listed.stdout
+    finally:
+        spawn._kill_agent(env)
+
+
+def test_a_key_the_agent_rejects_is_reported_as_such(fake_tools, tmp_path):
+    """"ssh-add failed" and "the server refused the key" are different
+    problems; conflating them sends people to the wrong host to debug."""
+    tmp, _ = fake_tools
+    (tmp / "ssh-add").write_text("#!/bin/sh\ncat >/dev/null\necho 'bad format' >&2\nexit 1\n")
+    (tmp / "ssh-add").chmod(0o755)
+
+    with pytest.raises(spawn.AgentError, match="bad format"):
+        spawn.run("ssh", ["root@host"], Credential("k", KEY))

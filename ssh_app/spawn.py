@@ -8,11 +8,18 @@ command and never sees the key. So the rule this module exists to keep is:
 
 How each kind gets in:
 
-* **private key** → an ephemeral ``ssh-agent`` that lives exactly as long as
-  the connection, fed through an inherited pipe (``ssh-add -``). The key never
-  touches a filesystem, not even ``/dev/shm``, which is what the previous
+* **private key** → an ``ssh-agent`` started for this one command and killed
+  when it returns, with the key handed to ``ssh-add`` on its stdin. The key
+  never touches a filesystem, not even ``/dev/shm``, which is what the previous
   ``./aw ssh`` did (write 0600, ``ssh-add``, ``rm``). One less window in which
   a crash leaves a key on a tmpfs.
+
+  An earlier version passed the key on an inherited descriptor to
+  ``ssh-agent sh -c 'ssh-add - <&3; exec ssh'``. It worked in the agent-runner
+  container and failed in the workspace container with "Bad file descriptor" —
+  whether an arbitrary fd survives ssh-agent's exec is not something ssh-agent
+  promises, and it varies by build. Worth remembering before anyone reaches for
+  that trick again: it looks tidier and is not portable.
 * **password** → ``SSH_ASKPASS`` with ``SSH_ASKPASS_REQUIRE=force``. That is
   OpenSSH's own mechanism, so there is no ``sshpass`` dependency to install and
   no pty to fake. The helper script contains no secret: it reads a 0600 file in
@@ -37,6 +44,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import re
 import subprocess
 import tempfile
 
@@ -50,6 +58,10 @@ _ASKPASS = "#!/bin/sh\nexec cat \"$(dirname \"$0\")/pw\"\n"
 
 class BinaryMissing(RuntimeError):
     """The tool itself isn't installed here — say where "here" is."""
+
+
+class AgentError(RuntimeError):
+    """The key never reached an agent — distinct from ssh refusing it."""
 
 
 def known_hosts_path() -> str:
@@ -97,21 +109,50 @@ def require(binary: str) -> str:
     )
 
 
-#: The key pipe always arrives as this descriptor in the child. It is dup'd
-#: there rather than passed at whatever number ``os.pipe()`` handed out,
-#: because ``/bin/sh`` is dash on Debian and dash's ``<&N`` only parses a
-#: single digit: a process that happened to be holding ten files open would
-#: get "Bad fd number" and no key, intermittently and only under load.
-_KEY_FD = 3
+def _start_agent(env: dict) -> dict:
+    """Start an ssh-agent of our own and return the env that reaches it.
 
+    The obvious implementation — ``ssh-agent sh -c 'ssh-add - <&3; exec ssh'``
+    with the key on an inherited descriptor — is what this replaces. It worked
+    in one container and failed in another with "Bad file descriptor": whether
+    an arbitrary fd survives ssh-agent's exec is not something ssh-agent
+    promises, and it differs between OpenSSH builds. Nothing in this app should
+    depend on that.
 
-def _agent_script(program: str, read_fd: int = _KEY_FD) -> str:
-    """Load the key from the inherited pipe, then become the real tool.
-
-    ``exec`` matters: without it the shell stays as a parent and signal
-    handling (Ctrl-C on an interactive session) goes to the wrong process.
+    So the agent is started as a daemon, the key goes in over ``ssh-add``'s own
+    stdin — a pipe, still never a file — and the connection inherits only
+    ``SSH_AUTH_SOCK``. Portable, and the same shape on every host.
     """
-    return f'ssh-add -q - <&{read_fd} || exit 1\nexec {program} "$@"'
+    out = subprocess.run(["ssh-agent", "-s"], capture_output=True, text=True, env=env)
+    if out.returncode != 0:
+        raise AgentError(f"ssh-agent would not start: {out.stderr.strip() or out.returncode}")
+    agent_env = dict(env)
+    for key in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+        m = re.search(rf"{key}=([^;]+);", out.stdout)
+        if m:
+            agent_env[key] = m.group(1)
+    if "SSH_AUTH_SOCK" not in agent_env:
+        raise AgentError("ssh-agent started but printed no SSH_AUTH_SOCK")
+    return agent_env
+
+
+def _add_key(agent_env: dict, value: str) -> None:
+    """Feed the key to the agent on stdin. Its stderr is safe to surface —
+    ssh-add never echoes key material, only what went wrong with it."""
+    out = subprocess.run(
+        ["ssh-add", "-"], input=value if value.endswith("\n") else value + "\n",
+        capture_output=True, text=True, env=agent_env,
+    )
+    if out.returncode != 0:
+        raise AgentError(
+            f"the key could not be loaded into ssh-agent: "
+            f"{out.stderr.strip() or 'ssh-add exited ' + str(out.returncode)}"
+        )
+
+
+def _kill_agent(agent_env: dict) -> None:
+    subprocess.run(["ssh-agent", "-k"], env=agent_env,
+                   capture_output=True, check=False)
 
 
 def _password_dir(value: str) -> str:
@@ -186,36 +227,13 @@ def run(program: str, args: list[str], credential: Credential, *,
 
     if credential.is_private_key:
         require("ssh-agent")
-        read_fd, write_fd = os.pipe()
+        require("ssh-add")
+        agent_env = _start_agent(env)
         try:
-            os.set_inheritable(read_fd, True)
-            # preexec_fn runs in the forked child after subprocess has closed
-            # everything outside pass_fds, so this is where the pipe becomes
-            # fd 3 — see _KEY_FD. Safe here specifically because this is a
-            # single-threaded CLI; it would not be inside the server.
-            proc = subprocess.Popen(
-                ["ssh-agent", "sh", "-c", _agent_script(program), "--"] + argv[1:],
-                # _KEY_FD is in pass_fds as well as read_fd: subprocess closes
-                # every descriptor outside that set AFTER preexec_fn runs, so
-                # without it the dup'd fd 3 is closed again before exec and the
-                # child gets "Bad file descriptor" instead of a key.
-                pass_fds=tuple(sorted({read_fd, _KEY_FD})), env=env, cwd=cwd,
-                preexec_fn=(lambda fd=read_fd: os.dup2(fd, _KEY_FD)),
-            )
-            os.close(read_fd)
-            read_fd = -1
-            with os.fdopen(write_fd, "w") as fh:
-                write_fd = -1
-                fh.write(credential.value if credential.value.endswith("\n")
-                         else credential.value + "\n")
-            return proc.wait()
+            _add_key(agent_env, credential.value)
+            return subprocess.Popen(argv, env=agent_env, cwd=cwd).wait()
         finally:
-            for fd in (read_fd, write_fd):
-                if fd >= 0:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
+            _kill_agent(agent_env)
 
     d = _password_dir(credential.value)
     try:
@@ -229,4 +247,4 @@ def run(program: str, args: list[str], credential: Credential, *,
 
 
 __all__ = ["run", "build_argv", "ssh_options", "known_hosts_path", "require",
-           "BinaryMissing"]
+           "BinaryMissing", "AgentError"]
