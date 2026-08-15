@@ -170,7 +170,11 @@ def fetch(name: str, reason: str, scope: str = "one_shot",
                                 # Who a window grant would belong to. Computed
                                 # HERE because only this process can see its own
                                 # session or shell — see caller.py.
-                                "caller_key": caller.caller_key(allow_local=True)})
+                                "caller_key": caller.caller_key(allow_local=True),
+                                # Stable across runs, so a scheduled task can
+                                # be named on a secret's allowlist and read it
+                                # without waking anybody.
+                                "agent": caller.agent_identity()})
         body = _checked(name, status, body)
         request_id = body.get("request_id") or ""
         if request_id:

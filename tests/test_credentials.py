@@ -268,3 +268,14 @@ def test_a_read_says_who_a_window_would_belong_to(api, monkeypatch):
 
     post = next(c for c in fake.calls if c[0] == "POST")
     assert post[2]["caller_key"] == "session:sess-42"
+
+
+def test_a_read_also_carries_the_stable_agent_identity(api, monkeypatch):
+    """A task named on a secret's allowlist has to be recognisable next week,
+    which the per-run session key never is."""
+    monkeypatch.setenv("AW_AGENT_SLUG", "nightly-backup")
+    fake = api(["private_root_h"])
+    creds.fetch("private_root_h", "because")
+
+    post = next(c for c in fake.calls if c[0] == "POST")
+    assert post[2]["agent"] == "agent:nightly-backup"
