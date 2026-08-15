@@ -29,6 +29,7 @@ Naming conventions accepted, in priority order, for ``user@host``:
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from .target import Target
@@ -139,39 +140,73 @@ def resolve_name(target: Target, override: str | None = None) -> str:
     )
 
 
+POLL_INTERVAL_S = 2.0
+
+
 def fetch(name: str, reason: str, scope: str = "one_shot",
           max_wait_s: int = 300) -> Credential:
     """Request the value, waiting for the human if the gate is still on.
 
-    Waits by default, unlike the MCP tool: a person typing ``aw-workspace-cli
-    ssh`` is sitting in front of the terminal and cannot "collect it later" —
-    there is no later, the process either connects or it does not. Secrets whose
-    gate has been turned off in Settings come back on the first poll with no
-    prompt at all.
+    Waits, unlike the MCP tool: a person typing ``aw-workspace-cli ssh`` is
+    sitting in front of the terminal and cannot "collect it later" — there is
+    no later, the process either connects or it does not. Secrets whose gate
+    has been turned off in Settings come back on the very first response with
+    no prompt at all.
+
+    The waiting is done **here, in short polls**, rather than by handing
+    ``max_wait_s`` to the server and holding one long request open. That is not
+    a style choice: a command run from an agent-runner container reaches the
+    workspace through the tunnel edge, which cuts any request at ~30s. A
+    server-side wait would therefore die at 30 seconds with "502 workspace
+    offline" — a message that describes neither what happened nor what to do —
+    while the approval it was waiting for was still perfectly alive.
     """
     status, body = request("POST", f"{SECRETS_PREFIX}/secrets/{name}/read",
-                           {"reason": reason, "scope": scope,
-                            "max_wait_s": max_wait_s},
-                           timeout=max_wait_s + 30)
+                           {"reason": reason, "scope": scope, "max_wait_s": 0})
+    body = _checked(name, status, body)
+
+    request_id = body.get("request_id") or ""
+    deadline = time.monotonic() + max(0, max_wait_s)
+    while True:
+        if body.get("status") != "pending":
+            value = body.get("value")
+            if not value:
+                raise CredentialError(
+                    f"{name!r} was approved but carried no value — a one-shot grant "
+                    f"that had already been delivered. Run the command again to "
+                    f"request a fresh one."
+                )
+            return Credential(name=name, value=value)
+
+        if not request_id:
+            raise CredentialError(
+                f"the approval for {name!r} is pending but carried no request id, "
+                f"so there is nothing to poll. This is a bug in aw-app-secrets."
+            )
+        if time.monotonic() >= deadline:
+            raise ApprovalRefused(
+                f"nobody answered the approval for {name!r} within {max_wait_s}s. "
+                f"The request is still live — approve it on Telegram and run the "
+                f"command again, or raise the wait with --aw-wait."
+            )
+        time.sleep(POLL_INTERVAL_S)
+        status, body = request("GET", f"{SECRETS_PREFIX}/requests/{request_id}")
+        body = _checked(name, status, body)
+
+
+def _checked(name: str, status: int, body) -> dict:
+    """Turn an HTTP answer into either a usable body or the right exception.
+
+    A 403 is the human saying no — an answer, not a failure — so it has its own
+    type and must never be retried.
+    """
     if status == 403:
         raise ApprovalRefused(_detail(body) or f"the request for {name!r} was refused")
     if status == 503:
         raise CredentialError(_detail(body) or "no secret store reachable")
     if status >= 400 or not isinstance(body, dict):
         raise CredentialError(f"could not read {name!r} (HTTP {status}): {_detail(body)}")
-
-    if body.get("status") == "pending":
-        raise ApprovalRefused(
-            f"nobody answered the approval for {name!r} in time. The request is "
-            f"still live — approve it on Telegram and run the command again."
-        )
-    value = body.get("value")
-    if not value:
-        raise CredentialError(
-            f"{name!r} was approved but carried no value — a one-shot grant that "
-            f"had already been delivered. Run the command again to request a fresh one."
-        )
-    return Credential(name=name, value=value)
+    return body
 
 
 def _detail(body) -> str:

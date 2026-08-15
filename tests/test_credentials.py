@@ -26,6 +26,8 @@ class _Api:
 
     def __call__(self, method, path, body=None, timeout=None):
         self.calls.append((method, path, body))
+        if method == "GET" and "/requests/" in path:
+            return self.read          # polling an outstanding approval
         if method == "GET":
             return 200, {"secrets": [{"name": n} for n in self.names]}
         return self.read
@@ -120,7 +122,45 @@ def test_a_timeout_says_the_request_is_still_live(api):
     """Telling someone to re-approve is useless if they think it expired."""
     api(["private_root_h"], read=(200, {"status": "pending", "request_id": "x"}))
     with pytest.raises(ApprovalRefused, match="still live"):
-        creds.fetch("private_root_h", "because")
+        creds.fetch("private_root_h", "because", max_wait_s=0)
+
+
+def test_the_wait_happens_here_not_inside_one_long_request(api):
+    """A command run from an agent-runner container reaches the workspace
+    through the tunnel edge, which cuts any request at ~30s. Asking the server
+    to hold the connection for five minutes turns a live approval into "502
+    workspace offline" — so the POST must ask it to return immediately, and the
+    waiting must be a series of short polls."""
+    fake = api(["private_root_h"],
+               read=(200, {"status": "pending", "request_id": "x"}))
+    with pytest.raises(ApprovalRefused):
+        creds.fetch("private_root_h", "because", max_wait_s=0)
+
+    post = next(c for c in fake.calls if c[0] == "POST")
+    assert post[2]["max_wait_s"] == 0, "asked the server to hold the request open"
+
+
+def test_a_pending_request_is_polled_by_id_not_re_requested(api, monkeypatch):
+    """Re-issuing the read would send a SECOND prompt for a question already on
+    the human's screen."""
+    monkeypatch.setattr(creds, "POLL_INTERVAL_S", 0)
+    fake = _Api(["private_root_h"])
+    answers = [(200, {"status": "pending", "request_id": "x"}),
+               (200, {"status": "pending", "request_id": "x"}),
+               (200, {"status": "approved", "value": KEY})]
+    fake.read = answers[0]
+
+    def _request(method, path, body=None, timeout=None):
+        fake.calls.append((method, path, body))
+        if method == "GET" and "/requests/" in path:
+            return answers[min(len(fake.calls) - 1, len(answers) - 1)]
+        if method == "GET":
+            return 200, {"secrets": [{"name": "private_root_h"}]}
+        return answers[0]
+
+    monkeypatch.setattr(creds, "request", _request)
+    assert creds.fetch("private_root_h", "because", max_wait_s=30).value == KEY
+    assert len([c for c in fake.calls if c[0] == "POST"]) == 1, "prompted twice"
 
 
 def test_approved_with_no_value_is_not_an_empty_password(api):

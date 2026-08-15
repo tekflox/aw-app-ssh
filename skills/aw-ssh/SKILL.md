@@ -125,7 +125,7 @@ Do not "fix" it with `--aw-host-keys no`; find out why the key changed.
 | `no credential in the vault for user@host` | nothing matches, and nobody was asked | check the hostname, then `aw-workspace-cli ssh list` |
 | `N secrets match host … did not say which user` | ambiguous | write `user@host`, or `--aw-secret <name>` |
 | `refused` / `denied by the human` | they said no | **stop.** Report it; do not retry |
-| `nobody answered the approval in time` | no tap within the window | ask the user in chat before trying again |
+| `nobody answered the approval within Ns` | no tap within the window | the request is still live — ask the user in chat before running it again |
 | `'rsync' is not installed in this container` | you are somewhere the app did not install it | see below |
 | `no secret store reachable` | this workspace never completed the `/link` handshake | not a missing key — say the workspace is unlinked |
 
