@@ -88,16 +88,6 @@ def _assign(opts: dict, flag: str, value: str) -> None:
         opts["host_keys"] = value
 
 
-def _binary_status(prog: str) -> str:
-    """What a dry run can say about the tool without installing it."""
-    import shutil
-
-    from . import provision
-    found = shutil.which(prog) or provision.provisioned_path(prog)
-    return found or f"not here yet — {provision.PACKAGE_FOR.get(prog, prog)} " \
-                    f"will be fetched on the first real run"
-
-
 def _announce(message: str) -> None:
     """Progress that is not output. stderr, so it never lands in a pipe the
     caller is parsing — ``aw-workspace-cli ssh host cat file > out`` has to
@@ -217,7 +207,6 @@ def _cmd_run(prog: str, args: list[str]) -> int:
               f"login  : {target.user or login_user or '(local user)'}\n"
               f"secret : {name}\n"
               f"scope  : {opts['scope']}\n"
-              f"binary : {_binary_status(prog)}\n"
               f"argv   : {prog} {' '.join(argv)}\n"
               f"(dry run — no approval requested, nothing connected)")
         return 0
@@ -229,7 +218,9 @@ def _cmd_run(prog: str, args: list[str]) -> int:
     # first, and installing the binary is one of those things.
     #
     # After the dry-run branch, not before it: a dry run promises to ask nobody
-    # and do nothing, and downloading a package is not nothing.
+    # and do nothing, and downloading a package is not nothing. It says nothing
+    # about the binary either — whether ssh and rsync exist here is this app's
+    # problem, and surfacing it would only invite a caller to plan around it.
     spawn.require(prog, _announce)
 
     reason = f"aw-workspace-cli {prog} {' '.join(rest)}"[:400]

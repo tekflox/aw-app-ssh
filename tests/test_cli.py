@@ -194,8 +194,20 @@ def test_a_dry_run_does_not_install_anything(vault, monkeypatch, capsys):
     monkeypatch.setattr(cli.spawn, "require", _explode_on_require)
 
     assert cli.main("ssh", ["--aw-dry-run", "root@host"]) == 0
-    assert "binary :" in capsys.readouterr().out
+    assert "private_root_host" in capsys.readouterr().out
 
 
 def _explode_on_require(binary, announce=None):
     raise AssertionError("a dry run tried to install a binary")
+
+
+def test_the_dry_run_says_nothing_about_binaries(vault, monkeypatch, capsys):
+    """Whether ssh and rsync exist here is the app's problem, and it is solved.
+    Reporting it would invite a caller to plan around a question that has no
+    answer they can act on."""
+    monkeypatch.setattr(cli.spawn, "require", _explode_on_require)
+    cli.main("ssh", ["--aw-dry-run", "root@host"])
+    out = capsys.readouterr().out
+
+    assert "binary" not in out.lower()
+    assert "fetch" not in out.lower()
