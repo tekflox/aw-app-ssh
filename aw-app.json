@@ -1,0 +1,55 @@
+{
+  "manifest_version": 1,
+  "id": "ssh",
+  "name": "SSH",
+  "version": "0.1.0",
+  "description": "Contributes `aw-workspace-cli ssh` and `aw-workspace-cli rsync`: the real tools, with the private key or password fetched from the workspace vault (aw-app-secrets) and injected into an ephemeral ssh-agent, so the caller — usually an agent — connects without ever seeing the credential. Arguments are ssh's/rsync's own; this app only adds `--aw-*` flags.",
+  "publisher": "TekFlox",
+  "category": "Apps",
+  "tier": "inprocess",
+  "resource_estimate": {
+    "cpu": "low",
+    "memory": "low",
+    "disk": "low"
+  },
+  "runtime": {
+    "python": ">=3.11",
+    "entrypoint": "ssh_app.plugin:SshAppPlugin"
+  },
+  "permissions": [
+    "commands:install"
+  ],
+  "contributes": {
+    "system_clis": [
+      {
+        "name": "ssh",
+        "installer": "scripts/install_openssh.sh",
+        "uninstall": "scripts/uninstall.sh",
+        "verify": "ssh -V"
+      },
+      {
+        "name": "rsync",
+        "installer": "scripts/install_rsync.sh",
+        "verify": "rsync --version"
+      }
+    ],
+    "skills": [
+      {
+        "id": "aw-ssh",
+        "path": "skills/aw-ssh/SKILL.md",
+        "description": "How to ssh into a host or rsync files to/from it from an agent, with the credential pulled from the workspace vault instead of being asked for — including how to check a host has a credential without interrupting anyone."
+      }
+    ]
+  },
+  "dependencies": {
+    "apps": [
+      {
+        "id": "secrets",
+        "version": ">=0.6.0",
+        "required": true,
+        "reason": "Every credential this app injects comes from aw-app-secrets' /api/apps/secrets/* — the vault, the approval gate and the per-secret auto-approve flag all live there. Without it there is nothing to inject."
+      }
+    ]
+  },
+  "migrations": {}
+}
