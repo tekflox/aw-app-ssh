@@ -20,6 +20,7 @@ import os
 import sys
 
 from . import credentials as creds
+from . import hosts
 from . import spawn
 from .credentials import ApprovalRefused, CredentialError
 from .target import Target, parse_rsync, parse_ssh
@@ -31,6 +32,8 @@ USAGE = """aw-workspace-cli {prog} — {prog} with credentials injected from the
   aw-workspace-cli {prog} status <user@host>      which secret would be used
   aw-workspace-cli {prog} list                    every ssh credential in the vault
   aw-workspace-cli {prog} add-key <user@host>     store a key/password from stdin
+  aw-workspace-cli {prog} hosts                   per-host defaults (ports)
+  aw-workspace-cli {prog} set-host <host> -p N    remember this host's ssh port
 
 Options this app consumes (everything else goes straight to {prog}):
   --aw-secret NAME     use this vault entry instead of the resolved one
@@ -111,6 +114,10 @@ def main(prog: str, args: list[str]) -> int:
             return _cmd_status(prog, args[1:])
         if args[0] == "add-key":
             return _cmd_add_key(args[1:])
+        if args[0] == "hosts":
+            return _cmd_hosts()
+        if args[0] == "set-host":
+            return _cmd_set_host(args[1:])
         return _cmd_run(prog, args)
     except (CredentialError, ApprovalRefused, WorkspaceUnreachable,
             spawn.BinaryMissing) as exc:
@@ -184,6 +191,55 @@ def _cmd_add_key(args: list[str]) -> int:
     return 0
 
 
+def _cmd_hosts() -> int:
+    known = hosts.load()
+    if not known:
+        print("No per-host defaults. Most hosts need none — set one when a host\n"
+              "listens somewhere other than 22:\n"
+              "    aw-workspace-cli ssh set-host ssh.example.com -p 18765")
+        return 0
+    print(f"{len(known)} host(s) with defaults ({hosts.path()}):")
+    for host in sorted(known):
+        entry = known[host]
+        note = f"  # {entry['note']}" if entry.get("note") else ""
+        print(f"  {host:40s} port {entry.get('port', 22)}{note}")
+    return 0
+
+
+def _cmd_set_host(args: list[str]) -> int:
+    """Remembering a port is worth a command of its own: getting it wrong costs
+    an approval and a person's attention before the connection even fails."""
+    host, port, note = "", None, ""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-p", "--port") and i + 1 < len(args):
+            port, i = args[i + 1], i + 1
+        elif a.startswith("-p") and a[2:].isdigit():
+            port = a[2:]
+        elif a in ("--note",) and i + 1 < len(args):
+            note, i = args[i + 1], i + 1
+        elif a == "--forget":
+            host = host or (args[i + 1] if i + 1 < len(args) else "")
+            return 0 if hosts.forget(host) else 1
+        elif not a.startswith("-"):
+            host = a
+        i += 1
+
+    if not host:
+        print("Usage: aw-workspace-cli ssh set-host <host> -p <port> [--note '...']",
+              file=sys.stderr)
+        return 1
+    if port is not None and not str(port).isdigit():
+        print(f"-p takes a port number (got {port!r})", file=sys.stderr)
+        return 1
+
+    entry = hosts.set_host(host, port=int(port) if port else None, note=note)
+    print(f"{host}: port {entry.get('port', 22)} — "
+          f"`aw-workspace-cli ssh {host}` now uses it without -p")
+    return 0
+
+
 def _cmd_run(prog: str, args: list[str]) -> int:
     opts, rest = _split_own_flags(args)
     target = _parse_target(prog, rest)
@@ -199,12 +255,16 @@ def _cmd_run(prog: str, args: list[str]) -> int:
     # passing it on, ssh would log in as whatever the local account is and the
     # server would reject a key it would otherwise have accepted.
     login_user = None if target.user else creds.login_user_from_name(name, target.host)
+    # Same idea for the port, except the secret's name cannot carry one — so it
+    # is remembered per host instead. See hosts.py for why that is worth having.
+    port = target.port or hosts.port_for(target.host)
 
     if opts["dry_run"]:
         argv = spawn.build_argv(prog, rest, host_key_policy=opts["host_keys"],
-                                login_user=login_user)
+                                login_user=login_user, port=port)
         print(f"target : {target.label}\n"
               f"login  : {target.user or login_user or '(local user)'}\n"
+              f"port   : {port or 22}{'' if target.port or not port else ' (remembered)'}\n"
               f"secret : {name}\n"
               f"scope  : {opts['scope']}\n"
               f"argv   : {prog} {' '.join(argv)}\n"
@@ -230,7 +290,7 @@ def _cmd_run(prog: str, args: list[str]) -> int:
     print(f"# got {credential.kind}; connecting as {target.label}", file=sys.stderr)
 
     return spawn.run(prog, rest, credential,
-                     host_key_policy=opts["host_keys"], login_user=login_user,
+                     host_key_policy=opts["host_keys"], login_user=login_user, port=port,
                      cwd=os.environ.get("AW_ORIGINAL_CWD") or os.getcwd(),
                      announce=_announce)
 

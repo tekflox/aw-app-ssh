@@ -95,6 +95,25 @@ One consequence worth knowing: when the match came from the host alone,
 `deploy`. That is almost always what you wanted, and it is why the dry run
 prints a `login` line — check it if the destination matters.
 
+## Hosts on a non-standard port
+
+The secret's name says who to log in as. It cannot say where to knock, so
+ports are remembered separately:
+
+```
+aw-workspace-cli ssh hosts                              # what is remembered
+aw-workspace-cli ssh set-host ssh.example.com -p 18765  # remember one
+```
+
+After that, `aw-workspace-cli ssh ssh.example.com` just connects; an explicit
+`-p` still wins if you pass one, and the dry run shows the port it will use.
+
+**Set this before the first connection to such a host, not after.** Getting it
+wrong is the expensive failure: the command resolves the key, interrupts a
+human, spends a one-shot grant, and only *then* times out against port 22 — a
+notification somebody answered for nothing. Measured on a real host here
+before ports were remembered.
+
 ## Adding a credential
 
 ```

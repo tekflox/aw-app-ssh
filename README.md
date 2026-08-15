@@ -61,6 +61,7 @@ account.
 | `commands/ssh.py`, `commands/rsync.py` | discovered by `aw-workspace-cli` from the installed app dir; both call `ssh_app.cli.main` |
 | `ssh_app/target.py` | pulling `user@host` out of a real ssh/rsync argv |
 | `ssh_app/credentials.py` | which secret, and fetching it through aw-app-secrets |
+| `ssh_app/hosts.py` | per-host defaults (the port), beside `known_hosts` on shared storage |
 | `ssh_app/spawn.py` | the injection, and the argv/`-e` surgery around it |
 | `ssh_app/provision.py` | making ssh/rsync exist in *this* container, with or without root |
 | `ssh_app/plugin.py` | activation: installs `openssh-client` + `rsync` (`python:3.12-slim` has neither) |

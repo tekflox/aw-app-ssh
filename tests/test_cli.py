@@ -211,3 +211,35 @@ def test_the_dry_run_says_nothing_about_binaries(vault, monkeypatch, capsys):
 
     assert "binary" not in out.lower()
     assert "fetch" not in out.lower()
+
+
+# ── per-host defaults ────────────────────────────────────────────────────
+
+def test_a_remembered_port_is_used_without_dash_p(vault, monkeypatch, capsys, tmp_path):
+    """The gap this closes cost a real approval: the command requested the key,
+    interrupted a human, spent the grant, and only then timed out against port
+    22 because the host listens on 18765."""
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    cli.hosts.set_host("host", port=18765)
+
+    cli.main("ssh", ["--aw-dry-run", "root@host"])
+    out = capsys.readouterr().out
+
+    assert "Port=18765" in out
+    assert "port   : 18765 (remembered)" in out
+
+
+def test_an_explicit_port_beats_the_remembered_one(vault, monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    cli.hosts.set_host("host", port=18765)
+
+    cli.main("ssh", ["--aw-dry-run", "-p", "2222", "root@host"])
+    out = capsys.readouterr().out
+
+    assert "port   : 2222" in out and "remembered" not in out
+
+
+def test_hosts_with_no_defaults_says_how_to_add_one(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    assert cli.main("ssh", ["hosts"]) == 0
+    assert "set-host" in capsys.readouterr().out

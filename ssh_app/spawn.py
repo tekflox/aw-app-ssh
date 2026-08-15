@@ -81,7 +81,8 @@ def known_hosts_path() -> str:
 
 
 def ssh_options(host_key_policy: str = "accept-new",
-                login_user: str | None = None) -> list[str]:
+                login_user: str | None = None,
+                port: int | None = None) -> list[str]:
     """Defaults injected after the caller's own options, so theirs win.
 
     ``login_user`` is set only when the argv named no user and the credential's
@@ -95,6 +96,8 @@ def ssh_options(host_key_policy: str = "accept-new",
         opts += ["-o", f"UserKnownHostsFile={path}"]
     if login_user:
         opts += ["-o", f"User={login_user}"]
+    if port:
+        opts += ["-o", f"Port={port}"]
     return opts
 
 
@@ -174,14 +177,15 @@ def _password_dir(value: str) -> str:
 
 def build_argv(program: str, args: list[str], *,
                host_key_policy: str = "accept-new",
-               login_user: str | None = None) -> list[str]:
+               login_user: str | None = None,
+               port: int | None = None) -> list[str]:
     """Insert our ssh defaults where ssh will still parse them.
 
     For ``ssh`` that is immediately before the host. For ``rsync`` it is inside
     ``-e``: an existing ``-e``/``--rsh`` from the caller is EXTENDED rather than
     replaced, because replacing it would quietly drop the transport they chose.
     """
-    opts = ssh_options(host_key_policy, login_user)
+    opts = ssh_options(host_key_policy, login_user, port)
     if not opts:
         return list(args)
 
@@ -228,7 +232,7 @@ def _env_for_provisioned(env: dict) -> dict:
 
 def run(program: str, args: list[str], credential: Credential, *,
         host_key_policy: str = "accept-new", login_user: str | None = None,
-        cwd: str | None = None, announce=None) -> int:
+        port: int | None = None, cwd: str | None = None, announce=None) -> int:
     """Spawn ``program`` with ``credential`` attached. Returns its exit code.
 
     stdin/stdout/stderr are inherited untouched — an interactive ssh session
@@ -243,7 +247,7 @@ def run(program: str, args: list[str], credential: Credential, *,
     """
     program_path = require(program, announce)
     argv = [program_path] + build_argv(program, args, host_key_policy=host_key_policy,
-                                       login_user=login_user)
+                                       login_user=login_user, port=port)
     env = _env_for_provisioned(dict(os.environ))
     cwd = cwd or os.getcwd()
 
