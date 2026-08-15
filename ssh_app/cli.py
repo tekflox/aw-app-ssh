@@ -187,6 +187,13 @@ def _cmd_run(prog: str, args: list[str]) -> int:
         print(f"aw-workspace-cli {prog}: {hint}", file=sys.stderr)
         return 1
 
+    # Before anything that can interrupt a human. Found by running it for real:
+    # in a container without rsync, the command fetched the credential — one
+    # approval, one notification, one one-shot grant spent — and only then died
+    # on the missing binary. Everything that can fail without asking must fail
+    # first.
+    spawn.require(prog)
+
     name = creds.resolve_name(target, opts["secret"])
     # The argv named no user but the credential's name knows one: without
     # passing it on, ssh would log in as whatever the local account is and the
