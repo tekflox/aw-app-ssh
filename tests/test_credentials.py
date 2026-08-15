@@ -256,3 +256,15 @@ def test_a_note_never_holds_a_value(monkeypatch, tmp_path):
     pending.remember("private_root_h", "r-1")
 
     assert KEY not in open(pending.path()).read()
+
+
+def test_a_read_says_who_a_window_would_belong_to(api, monkeypatch):
+    """`--aw-scope 10min` was silently useless because nothing told the backend
+    who was asking. This process computes it — the app cannot, being in another
+    container with another parent."""
+    monkeypatch.setenv("AW_SESSION_ID", "sess-42")
+    fake = api(["private_root_h"])
+    creds.fetch("private_root_h", "because")
+
+    post = next(c for c in fake.calls if c[0] == "POST")
+    assert post[2]["caller_key"] == "session:sess-42"

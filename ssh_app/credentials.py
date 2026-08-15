@@ -32,6 +32,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from . import caller
 from . import pending
 from .target import Target
 from .workspace_client import request
@@ -165,7 +166,11 @@ def fetch(name: str, reason: str, scope: str = "one_shot",
     request_id, body = _resume(name, request_id_override)
     if body is None:
         status, body = request("POST", f"{SECRETS_PREFIX}/secrets/{name}/read",
-                               {"reason": reason, "scope": scope, "max_wait_s": 0})
+                               {"reason": reason, "scope": scope, "max_wait_s": 0,
+                                # Who a window grant would belong to. Computed
+                                # HERE because only this process can see its own
+                                # session or shell — see caller.py.
+                                "caller_key": caller.caller_key(allow_local=True)})
         body = _checked(name, status, body)
         request_id = body.get("request_id") or ""
         if request_id:
