@@ -62,10 +62,14 @@ workspace owner and waits up to five minutes for a tap. So:
 - **Do not loop or retry.** A denial is an answer. An expiry means nobody was
   looking, not that trying again will work.
 - **Batch your remote work into one command.** Each invocation is a separate
-  one-shot grant and therefore a separate prompt. `ssh host 'a && b && c'`
-  costs one tap; three `ssh host` calls cost three. If you genuinely need
-  several round trips, ask for a window once — `--aw-scope 10min` — rather
-  than paying per command.
+  grant and therefore a separate prompt. `ssh host 'a && b && c'` costs one
+  tap; three `ssh host` calls cost three. This is the only reliable way to pay
+  once — see `--aw-scope` below for why the window flag is not.
+- **Expect no answer.** A prompt is a notification on a phone that may be face
+  down. Measured here: four minutes, no tap, and the whole turn spent waiting
+  for it. If you are about to need a host for the first time, say so in chat
+  first and let the person be ready, rather than firing a prompt into silence
+  and blocking on it.
 
 ## How the credential is chosen
 
@@ -85,6 +89,12 @@ Key or password is decided by **looking at the value** (`-----BEGIN … PRIVATE
 KEY-----`), not by the name. So one entry name works for either, and nobody has
 to remember a second convention.
 
+One consequence worth knowing: when the match came from the host alone,
+**you log in as the user named in the key, not as the local account**. So
+`aw-workspace-cli ssh box` with a `private_deploy_box` key connects as
+`deploy`. That is almost always what you wanted, and it is why the dry run
+prints a `login` line — check it if the destination matters.
+
 ## Adding a credential
 
 ```
@@ -102,12 +112,33 @@ warning. Run `aw-workspace-cli ssh list` first if you are unsure.
 |---|---|---|
 | `--aw-dry-run` | off | resolve and print the plan; ask nobody, connect to nothing |
 | `--aw-secret NAME` | — | use this vault entry instead of the resolved one |
-| `--aw-scope` | `one_shot` | `10min` / `60min` let this same process re-read without a second prompt |
+| `--aw-scope` | `one_shot` | a window — but see the warning below, it rarely saves a prompt |
 | `--aw-wait N` | `300` | seconds to wait for the human before giving up |
 | `--aw-host-keys` | `accept-new` | `yes` (strict) / `no`. See below before reaching for `no`. |
 
 Everything else is passed through untouched. `--aw-` is a prefix ssh and rsync
 do not use, which is why there is no escape hatch to learn.
+
+**`--aw-scope 10min` is not a way to avoid a second prompt.** A window grant is
+held in an in-process cache belonging to the aw-backend worker that served the
+request, and that service runs ten workers; the next call lands on whichever
+one the load balancer picks, and nine times in ten that worker has never heard
+of the grant and prompts again. This is deliberate on aw-backend's side — a
+cache shared across workers would widen a grant beyond the process that earned
+it — so it is not a bug to route around. **Batch into one command instead.**
+
+## What the output looks like
+
+- **stdout is the remote's output, and nothing else.** This app's own progress
+  lines (`# requesting …`, `# got private key`) go to stderr, so
+  `aw-workspace-cli ssh host cat /etc/hosts > local.txt` gives you the file and
+  not a commentary.
+- **The exit code is ssh's or rsync's own**, passed through unchanged. `23`
+  from rsync still means a partial transfer; it does not mean this app failed.
+- **`Warning: Permanently added 'host' to the list of known hosts` is not an
+  error.** It is the first connection to that host being recorded, once, and
+  the command carries on. It will not appear again — the file survives
+  container restarts.
 
 ## Host keys
 

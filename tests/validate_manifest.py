@@ -69,3 +69,17 @@ def test_the_commands_it_promises_are_present():
         src = open(path, encoding="utf-8").read()
         assert f'COMMAND = "{name}"' in src
         assert "def run(" in src
+
+
+def test_uninstall_does_not_delete_accumulated_host_keys():
+    """Every entry in known_hosts is a host key somebody accepted. Deleting
+    them silently downgrades the next connection to each of those hosts back to
+    trust-on-first-use — the same reasoning that made aw-workspace keep an
+    app's settings across an uninstall rather than reset them."""
+    script = open(os.path.join(ROOT, "scripts/uninstall.sh"), encoding="utf-8").read()
+
+    assert "known_hosts" in script, "the decision should be stated, not implicit"
+    for line in script.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assert not ("rm " in line and "known_hosts" in line), line
