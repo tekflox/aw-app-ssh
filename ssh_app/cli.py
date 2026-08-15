@@ -21,6 +21,7 @@ import sys
 
 from . import credentials as creds
 from . import hosts
+from . import pending
 from . import spawn
 from .credentials import ApprovalRefused, CredentialError
 from .target import Target, parse_rsync, parse_ssh
@@ -39,17 +40,19 @@ Options this app consumes (everything else goes straight to {prog}):
   --aw-secret NAME     use this vault entry instead of the resolved one
   --aw-scope SCOPE     one_shot (default) | 10min | 60min
   --aw-wait SECONDS    how long to wait for approval (default 300)
+  --aw-request ID      collect this specific outstanding approval
   --aw-host-keys MODE  accept-new (default) | yes | no
   --aw-dry-run         resolve the secret and print the plan; ask nobody
 """
 
-_FLAGS_WITH_VALUE = {"--aw-secret", "--aw-scope", "--aw-wait", "--aw-host-keys"}
+_FLAGS_WITH_VALUE = {"--aw-secret", "--aw-scope", "--aw-wait", "--aw-host-keys",
+                     "--aw-request"}
 
 
 def _split_own_flags(args: list[str]) -> tuple[dict, list[str]]:
     """Ours out, theirs through — untouched and in the original order."""
     opts: dict = {"secret": None, "scope": "one_shot", "wait": 300,
-                  "host_keys": "accept-new", "dry_run": False}
+                  "host_keys": "accept-new", "dry_run": False, "request": None}
     rest: list[str] = []
     i = 0
     while i < len(args):
@@ -85,6 +88,8 @@ def _assign(opts: dict, flag: str, value: str) -> None:
         if not value.isdigit():
             raise CredentialError("--aw-wait takes a number of seconds")
         opts["wait"] = int(value)
+    elif flag == "--aw-request":
+        opts["request"] = value
     elif flag == "--aw-host-keys":
         if value not in ("accept-new", "yes", "no"):
             raise CredentialError("--aw-host-keys must be accept-new, yes or no")
@@ -284,9 +289,13 @@ def _cmd_run(prog: str, args: list[str]) -> int:
     spawn.require(prog, _announce)
 
     reason = f"aw-workspace-cli {prog} {' '.join(rest)}"[:400]
-    print(f"# requesting '{name}' for {target.label} — approve on Telegram if asked",
-          file=sys.stderr)
-    credential = creds.fetch(name, reason, opts["scope"], opts["wait"])
+    outstanding = opts["request"] or pending.get(name)
+    _announce(
+        f"# collecting the approval you already gave for '{name}'"
+        if outstanding else
+        f"# requesting '{name}' for {target.label} — approve on Telegram if asked")
+    credential = creds.fetch(name, reason, opts["scope"], opts["wait"],
+                             request_id_override=opts["request"])
     print(f"# got {credential.kind}; connecting as {target.label}", file=sys.stderr)
 
     return spawn.run(prog, rest, credential,

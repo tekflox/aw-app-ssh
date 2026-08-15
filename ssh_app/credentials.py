@@ -32,6 +32,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from . import pending
 from .target import Target
 from .workspace_client import request
 
@@ -144,7 +145,7 @@ POLL_INTERVAL_S = 2.0
 
 
 def fetch(name: str, reason: str, scope: str = "one_shot",
-          max_wait_s: int = 300) -> Credential:
+          max_wait_s: int = 300, request_id_override: str | None = None) -> Credential:
     """Request the value, waiting for the human if the gate is still on.
 
     Waits, unlike the MCP tool: a person typing ``aw-workspace-cli ssh`` is
@@ -161,14 +162,20 @@ def fetch(name: str, reason: str, scope: str = "one_shot",
     offline" — a message that describes neither what happened nor what to do —
     while the approval it was waiting for was still perfectly alive.
     """
-    status, body = request("POST", f"{SECRETS_PREFIX}/secrets/{name}/read",
-                           {"reason": reason, "scope": scope, "max_wait_s": 0})
-    body = _checked(name, status, body)
-
-    request_id = body.get("request_id") or ""
+    request_id, body = _resume(name, request_id_override)
+    if body is None:
+        status, body = request("POST", f"{SECRETS_PREFIX}/secrets/{name}/read",
+                               {"reason": reason, "scope": scope, "max_wait_s": 0})
+        body = _checked(name, status, body)
+        request_id = body.get("request_id") or ""
+        if request_id:
+            # Written down BEFORE the wait, not after: the whole point is to
+            # survive this process giving up, or dying.
+            pending.remember(name, request_id)
     deadline = time.monotonic() + max(0, max_wait_s)
     while True:
         if body.get("status") != "pending":
+            pending.forget(name)
             value = body.get("value")
             if not value:
                 raise CredentialError(
@@ -186,12 +193,37 @@ def fetch(name: str, reason: str, scope: str = "one_shot",
         if time.monotonic() >= deadline:
             raise ApprovalRefused(
                 f"nobody answered the approval for {name!r} within {max_wait_s}s. "
-                f"The request is still live — approve it on Telegram and run the "
-                f"command again, or raise the wait with --aw-wait."
+                f"The request is still live and has been noted — approve it on "
+                f"Telegram whenever you get to it and run the SAME command again; "
+                f"it will pick up your answer instead of asking twice."
             )
         time.sleep(POLL_INTERVAL_S)
         status, body = request("GET", f"{SECRETS_PREFIX}/requests/{request_id}")
         body = _checked(name, status, body)
+
+
+def _resume(name: str, override: str | None) -> tuple[str, dict | None]:
+    """An outstanding request for this secret, if one is still collectable.
+
+    Returns ``(request_id, body)`` with ``body`` None when there is nothing to
+    resume and a fresh request has to be made. A dead id is dropped quietly —
+    the caller wanted a connection, not a report on an old request.
+    """
+    request_id = override or pending.get(name)
+    if not request_id:
+        return "", None
+    status, body = request("GET", f"{SECRETS_PREFIX}/requests/{request_id}")
+    if status >= 400 or not isinstance(body, dict) or body.get("status") in (
+            None, "not_found", "expired", "denied", "rejected"):
+        pending.forget(name)
+        if override:
+            # Asked for explicitly: silence would look like it had worked.
+            raise CredentialError(
+                f"request {override!r} is no longer collectable "
+                f"({_detail(body) or body.get('status') if isinstance(body, dict) else status})"
+            )
+        return "", None
+    return request_id, body
 
 
 def _checked(name: str, status: int, body) -> dict:

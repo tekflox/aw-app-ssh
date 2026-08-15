@@ -243,3 +243,18 @@ def test_hosts_with_no_defaults_says_how_to_add_one(monkeypatch, capsys, tmp_pat
     monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
     assert cli.main("ssh", ["hosts"]) == 0
     assert "set-host" in capsys.readouterr().out
+
+
+def test_it_does_not_ask_for_a_tap_it_is_about_to_reuse(vault, monkeypatch, capsys, tmp_path):
+    """Telling someone to approve on Telegram while collecting the approval
+    they already gave is how a working feature reads as a broken one."""
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    cli.pending.remember("private_root_host", "outstanding-id")
+    monkeypatch.setattr(cli.spawn, "require", lambda b, a=None: b)
+    monkeypatch.setattr(cli.spawn, "run", lambda *a, **k: 0)
+
+    cli.main("ssh", ["root@host"])
+    err = capsys.readouterr().err
+
+    assert "already gave" in err
+    assert "approve on Telegram" not in err

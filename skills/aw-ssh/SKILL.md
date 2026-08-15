@@ -70,6 +70,11 @@ workspace owner and waits up to five minutes for a tap. So:
   for it. If you are about to need a host for the first time, say so in chat
   first and let the person be ready, rather than firing a prompt into silence
   and blocking on it.
+- **A late tap is not wasted.** When the wait runs out the request id is
+  written down, so running the *same command* later collects the answer they
+  eventually gave rather than sending a second prompt for the same question.
+  So the right move after a timeout is to carry on with something else and
+  retry once — not to give up, and not to re-ask immediately.
 
 ## How the credential is chosen
 
@@ -176,7 +181,7 @@ Do not "fix" it with `--aw-host-keys no`; find out why the key changed.
 | `no credential in the vault for user@host` | nothing matches, and nobody was asked | check the hostname, then `aw-workspace-cli ssh list` |
 | `N secrets match host … did not say which user` | ambiguous | write `user@host`, or `--aw-secret <name>` |
 | `refused` / `denied by the human` | they said no | **stop.** Report it; do not retry |
-| `nobody answered the approval within Ns` | no tap within the window | the request is still live — ask the user in chat before running it again |
+| `nobody answered the approval within Ns` | no tap within the window | the request was noted — when they do tap, run the **same command again** and it collects that answer instead of asking twice |
 | `no secret store reachable` | this workspace never completed the `/link` handshake | not a missing key — say the workspace is unlinked |
 
 ## Local paths

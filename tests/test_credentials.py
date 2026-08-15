@@ -194,3 +194,65 @@ def test_a_host_wide_name_encodes_no_user():
     """``ssh_box`` genuinely does not say who; inventing one would be a guess
     dressed up as a lookup."""
     assert creds.login_user_from_name("ssh_box", "box") is None
+
+
+# ── picking up an answer that arrived after we stopped waiting ───────────
+
+def test_an_outstanding_request_is_collected_instead_of_asking_again(api, monkeypatch, tmp_path):
+    """The sequence this exists for: the command gives up, the person taps
+    twenty minutes later, and running it again used to send a SECOND prompt for
+    a question they had already answered."""
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    from ssh_app import pending
+    pending.remember("private_root_h", "old-request")
+
+    fake = api(["private_root_h"], read=(200, {"status": "approved", "value": KEY}))
+    assert creds.fetch("private_root_h", "because").value == KEY
+
+    assert not [c for c in fake.calls if c[0] == "POST"], "asked again anyway"
+    assert pending.get("private_root_h") is None, "a spent id was left behind"
+
+
+def test_a_dead_outstanding_request_falls_back_to_asking(api, monkeypatch, tmp_path):
+    """An id that expired must not stop the caller getting a connection — they
+    wanted a host, not a report on an old request."""
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    from ssh_app import pending
+    pending.remember("private_root_h", "dead")
+
+    calls = []
+
+    def _request(method, path, body=None, timeout=None):
+        calls.append((method, path))
+        if method == "GET" and "/requests/dead" in path:
+            return 200, {"status": "expired"}
+        if method == "GET" and "/requests/" in path:
+            return 200, {"status": "approved", "value": KEY}
+        if method == "GET":
+            return 200, {"secrets": [{"name": "private_root_h"}]}
+        return 200, {"status": "approved", "value": KEY}
+
+    monkeypatch.setattr(creds, "request", _request)
+    assert creds.fetch("private_root_h", "because").value == KEY
+    assert any(m == "POST" for m, _ in calls), "never asked for a fresh one"
+
+
+def test_the_id_is_written_down_before_the_wait_not_after(api, monkeypatch, tmp_path):
+    """It has to survive this process giving up — or dying, which is the normal
+    end of a per-turn agent container."""
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    from ssh_app import pending
+    api(["private_root_h"], read=(200, {"status": "pending", "request_id": "r-1"}))
+
+    with pytest.raises(ApprovalRefused):
+        creds.fetch("private_root_h", "because", max_wait_s=0)
+
+    assert pending.get("private_root_h") == "r-1"
+
+
+def test_a_note_never_holds_a_value(monkeypatch, tmp_path):
+    monkeypatch.setenv("AW_WORKSPACE_HOME", str(tmp_path))
+    from ssh_app import pending
+    pending.remember("private_root_h", "r-1")
+
+    assert KEY not in open(pending.path()).read()
