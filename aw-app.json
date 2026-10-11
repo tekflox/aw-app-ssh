@@ -39,7 +39,10 @@
         "path": "skills/aw-ssh/SKILL.md",
         "description": "How to ssh into a host or rsync files to/from it from an agent, with the credential pulled from the workspace vault instead of being asked for \u2014 including how to check a host has a credential without interrupting anyone."
       }
-    ]
+    ],
+    "knowledge": {
+      "path": "docs"
+    }
   },
   "dependencies": {
     "apps": [
